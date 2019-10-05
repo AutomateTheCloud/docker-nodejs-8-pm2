@@ -1,0 +1,85 @@
+##-------------------------------------------------------------------------------------------------
+# purpose: Docker - Node.js 8 (with PM2) - nodejs-8-pm2
+##-------------------------------------------------------------------------------------------------
+name: $(Date:yyyy.MM.dd)$(Rev:.r)
+
+trigger:
+  batch: 'true'
+  branches:
+    include:
+    - master
+
+##-------------------------------------------------------------------------------------------------
+variables:
+  - group: 'Docker Registry - DockerHub (AutomateTheCloud)'
+
+  - name: docker.image.tag
+    value: $(Build.BuildNumber)
+
+  - name: init.azure_devops
+    value: yes
+
+##-------------------------------------------------------------------------------------------------
+jobs:
+
+##---------------------------------------------------------------------------------------
+# Docker
+- job: docker_build
+  displayName: 'Docker - Build'
+  pool:
+    vmImage: 'Ubuntu 16.04'
+  workspace:
+    clean: all
+
+  steps:
+
+  ##-----------------------------------------------------------------------------
+  # Setup
+  - script: |
+      CID_URL_LATEST="$(curl -s https://api.github.com/repos/AutomateTheCloud/cid/releases/latest | grep "browser_download_url.*tgz" | cut -d : -f 2,3 | tr -d \" | awk '{$1=$1};1')"
+      sudo mkdir -p /opt/cid
+      curl -L ${CID_URL_LATEST} | sudo tar zxf - -C /opt/cid
+      sudo bash /opt/cid/scripts/utility/install.sh -d /usr/local/sbin/
+    displayName: 'Setup - Install CID'
+    name: setup_install_cid
+
+  - script: |
+      cid.initialize_workspace
+    displayName: 'Setup - Initialize Workspace'
+    name: setup_initialize
+
+  - script: |
+      cid.load_var_from_header_string -f "$(workspace.directory.repository)/docker/Dockerfile" -s "name" -v "docker.image.name"
+      cid.load_var_from_header_string -f "$(workspace.directory.repository)/docker/Dockerfile" -s "description" -v "docker.image.description"
+      cid.load_var_from_header_string -f "$(workspace.directory.repository)/docker/Dockerfile" -s "tag" -v "docker.image.tag"
+    name: docker_vars
+    displayName: 'Setup - Load Docker Variables'
+
+  - script: echo "##vso[build.updatebuildnumber]$(docker.image.tag) - (ID $(Build.BuildId))"
+    displayName: 'Initialize - Set Build Name'
+
+  ##-----------------------------------------------------------------------------
+  # Docker
+  - script: docker build -f Dockerfile -t $(docker.registry_url)/$(docker.organization)/$(docker.image.name):$(docker.image.tag) .
+    displayName: 'Docker - Build'
+    workingDirectory: $(workspace.directory.repository)/docker
+
+  - script: docker login -u $(docker.username) -p $(docker.password) $(docker.registry_url)
+    displayName: 'Docker - Login'
+
+  - script: docker push $(docker.registry_url)/$(docker.organization)/$(docker.image.name):$(docker.image.tag)
+    displayName: 'Docker - Push (Tag - Version)'
+
+  - script: docker tag $(docker.registry_url)/$(docker.organization)/$(docker.image.name):$(docker.image.tag) $(docker.registry_url)/$(docker.organization)/$(docker.image.name):latest
+    displayName: 'Docker - Tag Latest'
+
+  - script: cid.docker.generate_info_file -I $(workspace.directory.artifacts)/docker.info
+    displayName: 'Docker - Generate Info File'
+
+  ##-----------------------------------------------------------------------------
+  # Archive
+  - task: PublishBuildArtifacts@1
+    displayName: 'Archive - Publish Pipeline Build Artifacts'
+    inputs:
+      pathtoPublish: '$(workspace.directory.artifacts)'
+      artifactName: 'build'
